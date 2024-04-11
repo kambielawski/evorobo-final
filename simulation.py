@@ -11,13 +11,13 @@ ti.init(arch=ti.metal, default_fp = ti.f32)
 
 max_steps = 100
 ground_height = 0.1
-dt = 0.01
+dt = 0.02
 gravity = -9.8
-sim_damping = 0.1
+sim_damping = 1.0
 spring_stiffness = 1000.0
 # n_objects = 4
 ITERS = 10
-LEARNING_RATE = 0.1
+LEARNING_RATE = 0.03
 ACTUATION_INIT_FREQ = 0.5
 N_HIDDEN_NEURONS = 32
 N_SIN_WAVES = 10
@@ -32,6 +32,11 @@ starting_object_positions.append([0.1, ground_height + 0.2])
 starting_object_positions.append([0.2, ground_height + 0.2])
 starting_object_positions.append([0.2, ground_height + 0.1])
 
+starting_object_positions.append([0.1, ground_height + 0.3]) # 4
+starting_object_positions.append([0.2, ground_height + 0.3]) # 5
+starting_object_positions.append([0.3, ground_height + 0.2]) # 6
+starting_object_positions.append([0.3, ground_height + 0.3]) # 7
+
 def make_spring(a,b, motor=False):
     resting_length = np.sqrt((starting_object_positions[a][0] - starting_object_positions[b][0])**2 + (starting_object_positions[a][1] - starting_object_positions[b][1])**2)
     return [a,b, resting_length, motor, ACTUATION_INIT_FREQ]
@@ -39,12 +44,24 @@ def make_spring(a,b, motor=False):
 n_objects = len(starting_object_positions)
 
 springs = []
-springs.append(make_spring(0,1, motor=False)) # make spring between 0th and 1st object
+springs.append(make_spring(0,1, motor=True)) # make spring between 0th and 1st object
 springs.append(make_spring(1,2, motor=True))
-springs.append(make_spring(2,3, motor=False))
+springs.append(make_spring(2,3, motor=True))
 springs.append(make_spring(3,0, motor=True))
 springs.append(make_spring(0,2, motor=False))
 springs.append(make_spring(1,3, motor=True))
+
+springs.append(make_spring(4,1, motor=False))
+springs.append(make_spring(4,2, motor=False))
+springs.append(make_spring(4,5, motor=True))
+springs.append(make_spring(5,6, motor=True))
+springs.append(make_spring(6,7, motor=False))
+springs.append(make_spring(5,7, motor=False))
+springs.append(make_spring(5,2, motor=False))
+springs.append(make_spring(5,7, motor=True))
+springs.append(make_spring(2,7, motor=False))
+springs.append(make_spring(2,6, motor=True))
+springs.append(make_spring(1,5, motor=False))
 
 
 n_springs = len(springs)
@@ -95,25 +112,16 @@ ti.root.dense(ti.i, n_springs).place(motor_neuron_bias)
 ti.root.dense(ti.ij, (N_HIDDEN_NEURONS, n_sensors())).place(weights_sh)
 ti.root.dense(ti.ij, (n_springs, N_HIDDEN_NEURONS)).place(weights_hm)
 
-loss = ti.field(dtype=ti.f32, shape=(), needs_grad=True) # 0-dimensional tensor (i.e. fp scalar)
+loss = ti.field(dtype=ti.f32, shape=()) # 0-dimensional tensor (i.e. fp scalar)
+
+ti.root.lazy_grad()
 
 @ti.kernel
 def compute_loss():
-    loss[None] = positions[max_steps-1, 0][1]
+    loss[None] -= positions[max_steps-1, 1][0]
 
-
-def initialize():
+def initialize_body():
     goal[None] = GOAL_POSITION
-
-    for h in range(N_HIDDEN_NEURONS):
-        hidden_neuron_bias[h] = (np.random.randn() * 2 - 1) * 0.02
-        for s in range(n_sensors()):
-            weights_sh[h, s] = (np.random.randn() * 2 - 1) * 0.02
-
-    for s in range(n_springs):
-        motor_neuron_bias[s] = (np.random.randn() * 2 - 1) * 0.02
-        for h in range(N_HIDDEN_NEURONS):
-            weights_hm[s, h] = (np.random.randn() * 2 - 1) * 0.02
 
     for object_idx in range(n_objects):
        positions[0, object_idx] = starting_object_positions[object_idx]
@@ -126,6 +134,40 @@ def initialize():
         spring_resting_lengths[spring_idx] = s[2]
         spring_actuation[spring_idx] = s[3]
         spring_frequency[spring_idx] = s[4]
+
+    for i in range(1,max_steps):
+        for j in range(n_objects):
+            positions[i,j][0] = 0.0
+            positions[i,j][1] = 0.0
+            velocities[i,j][0] = 0.0
+            velocities[i,j][1] = 0.0
+
+    for i in range(max_steps):
+        for j in range(n_springs):
+            spring_restoring_forces[i,j][0] = 0.0
+            spring_restoring_forces[i,j][1] = 0.0
+            # spring_actuation[i,j] = 0.0
+
+    for i in range(max_steps):
+        for j in range(n_objects):
+            spring_forces_on_objects[i,j][0] = 0.0
+            spring_forces_on_objects[i,j][1] = 0.0
+
+    for i in range(max_steps):
+        for j in range(N_HIDDEN_NEURONS):
+            hidden_neuron_values[i,j] = 0.0
+
+def initialize_brain():
+    for h in range(N_HIDDEN_NEURONS):
+        hidden_neuron_bias[h] = (np.random.randn() * 2 - 1) * 0.02
+        for s in range(n_sensors()):
+            weights_sh[h, s] = (np.random.randn() * 2 - 1) * 0.02
+
+    for s in range(n_springs):
+        motor_neuron_bias[s] = (np.random.randn() * 2 - 1) * 0.02
+        for h in range(N_HIDDEN_NEURONS):
+            weights_hm[s, h] = (np.random.randn() * 2 - 1) * 0.02
+
 
 
 @ti.kernel
@@ -145,11 +187,11 @@ def simulate_springs(timestep: ti.i32):
                                 motor_neuron_values[timestep, spring_idx]
                                 # 0.05*ti.sin(spring_frequency[spring_idx] * timestep*1.0)
 
-        spring_unhappiness = length - spring_resting_length
+        spring_unhappiness = 2*(length - spring_resting_length)
         spring_restoring_forces[timestep, spring_idx] = (dt * spring_stiffness * spring_unhappiness / length) * dist
 
-        spring_forces_on_objects[timestep, object_a_idx] += -spring_restoring_forces[timestep, spring_idx]
-        spring_forces_on_objects[timestep, object_b_idx] += spring_restoring_forces[timestep, spring_idx]
+        spring_forces_on_objects[timestep, object_a_idx] += -0.35*spring_restoring_forces[timestep, spring_idx]
+        spring_forces_on_objects[timestep, object_b_idx] += 0.35*spring_restoring_forces[timestep, spring_idx]
     
 @ti.kernel
 def simulate_objects(timestep: ti.i32):
@@ -160,7 +202,7 @@ def simulate_objects(timestep: ti.i32):
         + spring_forces_on_objects[timestep, object_idx]
 
         # Collision detection and resolution
-        if old_position[1] <= ground_height and old_velocity[1] < 0:
+        if old_position[1] < ground_height: # and old_velocity[1] < 0:
             old_velocity = ti.Vector([0,0])
 
         new_position = old_position + dt * old_velocity
@@ -183,7 +225,7 @@ def simulate_neural_network_sh(timestep: ti.i32):
             activation += 0.1*weights_sh[h, N_SIN_WAVES + 4*j] * offset[0]     # relative x coordinate
             activation += 0.1*weights_sh[h, N_SIN_WAVES + 4*j + 1] * offset[1] # relative y coordinate
             activation += 0.1*weights_sh[h, N_SIN_WAVES + 4*j + 2] * positions[timestep, j][0]
-            activation += 0.1*weights_sh[h, N_SIN_WAVES + 4*j + 2] * positions[timestep, j][1]
+            activation += 0.1*weights_sh[h, N_SIN_WAVES + 4*j + 3] * positions[timestep, j][1]
 
         activation += weights_sh[h, n_objects*4 + N_SIN_WAVES]     * \
                                                     (goal[None][0] - center[timestep][0])
@@ -227,6 +269,48 @@ def simulate():
   for timestep in range(1, max_steps):
     step_once(timestep)
 
+def update_weights():
+    # Hidden to motor neuron weights
+    for i in range(n_springs):
+        for j in range(N_HIDDEN_NEURONS):
+            weights_hm[i, j] -= LEARNING_RATE * weights_hm.grad[i, j]
+
+    # Sensor to hidden neuron weights
+    for i in range(N_HIDDEN_NEURONS):
+        for j in range(n_objects):
+            weights_sh[i, j] -= LEARNING_RATE * weights_sh.grad[i, j]
+
+    # Sensor to hidden neurons
+    for h in range(N_HIDDEN_NEURONS):
+        # Central pattern generators
+        for s in ti.static(range(N_SIN_WAVES)):
+            weights_sh[h, s] -= LEARNING_RATE * weights_sh.grad[h, s]
+        # 4 sensors for each object
+        for j in ti.static(range(n_objects)):
+            weights_sh[h, N_SIN_WAVES + 4*j] -= LEARNING_RATE * weights_sh[h, N_SIN_WAVES + 4*j]
+            weights_sh[h, N_SIN_WAVES + 4*j + 1] -= LEARNING_RATE * weights_sh[h, N_SIN_WAVES + 4*j + 1]
+            weights_sh[h, N_SIN_WAVES + 4*j + 2] -= LEARNING_RATE * weights_sh[h, N_SIN_WAVES + 4*j + 2]
+            weights_sh[h, N_SIN_WAVES + 4*j + 3] -= LEARNING_RATE * weights_sh[h, N_SIN_WAVES + 4*j + 3]
+
+
+        weights_sh[h, n_objects*4 + N_SIN_WAVES] -= LEARNING_RATE * weights_sh[h, n_objects*4 + N_SIN_WAVES]
+        weights_sh[h, n_objects*4 + N_SIN_WAVES + 1] -= LEARNING_RATE * weights_sh[h, n_objects*4 + N_SIN_WAVES + 1]
+
+    # Hidden layer biases
+    for i in range(N_HIDDEN_NEURONS):
+        hidden_neuron_bias[i] -= LEARNING_RATE * hidden_neuron_bias.grad[i]
+    # Motor neuron biases
+    for i in range(n_springs):
+        motor_neuron_bias[i] -= LEARNING_RATE * motor_neuron_bias.grad[i]
+
+    
+
+def optimize_brain(n_iters=10):
+    for iteration in range(n_iters): 
+        run_simulation()
+        update_weights()
+        print(f'Iteration {iteration} loss: {loss}')
+
 # Draw
 def draw(frame_offset):
   for timestep in range(max_steps):
@@ -264,24 +348,30 @@ def make_and_watch_movie():
 # --------------------------------
 
 def run_simulation():
-    initialize()
-
+    initialize_body()
     
     # for i in range(ITERS):
     with ti.ad.Tape(loss):
         simulate()
+
+        loss[None] = 0
         compute_loss()
-
-        # starting_object_positions[0] = starting_object_positions[0] + LEARNING_RATE * positions.grad[0,0]
-
-        # Update the spring frequencies
-        # for i in range(n_springs):
-            # spring_frequency[i] = spring_frequency[i] + LEARNING_RATE * spring_frequency.grad[i]
-
-    os.system('rm *.png')
-    draw(0)
 
 # --------------------------------
 
+# initialize brain
+initialize_brain()
+
+# Run random robot
 run_simulation()
+os.system('rm *.png')
+draw(0)
+
+# Tune robot and update params
+optimize_brain(10)
+
+# Visualize last 'optimized' robota
+run_simulation()
+draw(max_steps)
+
 make_and_watch_movie()
