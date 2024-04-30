@@ -1,4 +1,5 @@
 import os
+import time
 import math
 import taichi as ti
 import numpy as np
@@ -11,16 +12,17 @@ from robot import SpringRobot
 # Initialization
 ti.init(arch=ti.metal, default_fp = ti.f32)
 
-ground_height = 0.1
+ground_height = 0.15
 dt = 0.02
 gravity = -9.8
 sim_damping = 1.0
-spring_stiffness = 100.0
-# n_points = 4
+# spring_stiffness = 30.0
+spring_stiffness = 2000.0
 ITERS = 10
-LEARNING_RATE = 0.01
+# LEARNING_RATE = 0.01
+LEARNING_RATE = 1.0
 N_HIDDEN_NEURONS = 32
-N_SIN_WAVES = 10
+N_SIN_WAVES = 4
 GOAL_POSITION = [0.9,0.2]
 
 
@@ -31,7 +33,7 @@ class Simulation:
         self.springs = robot.generate_body_springs(self.robot_starting_points)
         self.n_points = len(self.robot_starting_points)
         self.n_springs = len(self.springs)
-        self.max_steps = 100
+        self.max_steps = 150
 
         self.initialize_fields()
         self.initialize_body()
@@ -39,9 +41,9 @@ class Simulation:
 
     def n_sensors(self):
         # n_sin_waves simulates central pattern generators
-        # each object has 4 internal sensors
+        # each object has 7 internal sensors
         # 2 global sensors... 
-        return N_SIN_WAVES + 4*self.n_points + 2
+        return N_SIN_WAVES + 5*self.n_points + 2
 
     def initialize_fields(self):
         self.spring_anchor_a = ti.field(ti.i32)
@@ -142,7 +144,17 @@ class Simulation:
 
     @ti.kernel
     def compute_loss(self):
-        self.loss[None] -= self.positions[self.max_steps-1, 1][0]
+        # self.loss[None] -= self.positions[self.max_steps-1, 1][0]
+        # mean x value
+        # self.loss[None] -= (self.positions[self.max_steps-1, 0][0] + \
+        #                     self.positions[self.max_steps-1, 1][0] + \
+        #                     self.positions[self.max_steps-1, 2][0] + \
+        #                     self.positions[self.max_steps-1, 3][0]) / 4
+        
+        for object_idx in range(self.n_points):
+            self.loss[None] -= self.positions[self.max_steps-1, object_idx][0] / self.n_points
+        # self.loss[None] -= self.center[self.max_steps-1][0]
+        # self.loss[None] -= np.mean(self.motor_neuron_values[self.max_steps-1, :][0])
 
     @ti.kernel
     def simulate_springs(self, timestep: ti.i32):
@@ -153,32 +165,58 @@ class Simulation:
             position_b = self.positions[timestep-1, object_b_idx]
             dist = position_a - position_b
             length = dist.norm()
-            spring_resting_length = self.spring_resting_lengths[spring_idx]
 
             # Actuation: change the resting state of the spring to oscillate (open-loop)
-            spring_resting_length = spring_resting_length + \
+            spring_resting_length = self.spring_resting_lengths[spring_idx] + \
                                     self.spring_actuation[spring_idx] * \
-                                    self.motor_neuron_values[timestep, spring_idx]
+                                    self.motor_neuron_values[timestep, spring_idx] * 0.4
                                     # 0.05*ti.sin(spring_frequency[spring_idx] * timestep*1.0)
 
+            # Absolute value
+            # spring_unhappiness = ti.abs(2*(length - spring_resting_length))
             spring_unhappiness = 2*(length - spring_resting_length)
             self.spring_restoring_forces[timestep, spring_idx] = (dt * spring_stiffness * spring_unhappiness / length) * dist
 
-            self.spring_forces_on_objects[timestep, object_a_idx] += -0.35*self.spring_restoring_forces[timestep, spring_idx]
-            self.spring_forces_on_objects[timestep, object_b_idx] += 0.35*self.spring_restoring_forces[timestep, spring_idx]
-        
+            # Preservation of forces...
+            self.spring_forces_on_objects[timestep, object_a_idx] += -self.spring_restoring_forces[timestep, spring_idx]
+            self.spring_forces_on_objects[timestep, object_b_idx] += self.spring_restoring_forces[timestep, spring_idx]
+
+            old_position_a = self.positions[timestep-1, object_a_idx]
+            old_position_b = self.positions[timestep-1, object_b_idx]
+            if old_position_a[1] < ground_height and self.spring_forces_on_objects[timestep, object_a_idx][1] < 0.0: # Transfer y direction force to other object
+                # Force on object connected to object in ground
+                self.spring_forces_on_objects[timestep, object_b_idx] += -0.1*self.spring_forces_on_objects[timestep, object_a_idx]
+                # Force on object in grond
+                self.spring_forces_on_objects[timestep, object_a_idx] += -0.1*self.spring_forces_on_objects[timestep, object_a_idx]
+            if old_position_b[1] < ground_height and self.spring_forces_on_objects[timestep, object_b_idx][1] < 0.0: # Transfer y direction force to other object
+                self.spring_forces_on_objects[timestep, object_a_idx] += -0.1*self.spring_forces_on_objects[timestep, object_b_idx]
+                self.spring_forces_on_objects[timestep, object_b_idx] += -0.1*self.spring_forces_on_objects[timestep, object_b_idx]
+
     @ti.kernel
     def simulate_objects(self, timestep: ti.i32):
         for object_idx in range(self.n_points):
             old_position = self.positions[timestep-1, object_idx]
+
+            # Update velocity...
             old_velocity = (1-sim_damping) * self.velocities[timestep-1, object_idx] \
             + dt*gravity * ti.Vector([0,1]) \
-            + self.spring_forces_on_objects[timestep, object_idx]
+            + dt*(self.spring_forces_on_objects[timestep, object_idx]) # - self.spring_forces_on_objects[timestep-1, object_idx])
 
-            # Collision detection and resolution
-            if old_position[1] < ground_height: # and old_velocity[1] < 0:
-                # new_position = ti.Vector([old_position[0], ground_height])
-                old_velocity = ti.Vector([0,0])
+            if old_position[1] < ground_height and old_velocity[1] < 0:
+            #     # old_position = ti.Vector([old_position[0], ground_height])
+
+            #     # Friction x direction, restitution y direction
+            #     # old_velocity = ti.Vector([0.5*old_velocity[0],-0.8*old_velocity[1]])
+
+            #     # ZERO Friction x direction, restitution y direction
+            #     # old_velocity = ti.Vector([0.0,-0.8*old_velocity[1]])
+
+            #     # ZERO friction, perfect restitution
+                # old_velocity = ti.Vector([0.0,-old_velocity[1]])
+                  # Friction x direction, PERFECT restitution y direction
+                old_velocity = ti.Vector([0.5*old_velocity[0],-0.8*old_velocity[1]])
+
+                # old_velocity = ti.Vector([-old_velocity[0],-old_velocity[1]])
 
             new_position = old_position + dt * old_velocity
             new_velocity = old_velocity
@@ -197,10 +235,17 @@ class Simulation:
             # 4 sensors for each object
             for j in ti.static(range(self.n_points)):
                 offset = self.positions[timestep, j] - self.center[timestep]
+                # Relative x,y coordinates
                 activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j] * offset[0]     # relative x coordinate
                 activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 1] * offset[1] # relative y coordinate
-                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 2] * self.positions[timestep, j][0]
-                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 3] * self.positions[timestep, j][1]
+                # Absolute x,y coordinates
+                # activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 2] * self.positions[timestep, j][0]
+                # activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 3] * self.positions[timestep, j][1]
+                # Jerk sensors
+                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 2] * (self.positions[timestep, j][0] - 2*self.positions[timestep-1, j][0] + self.positions[timestep-2, j][0])
+                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 3] * (self.positions[timestep, j][1] - 2*self.positions[timestep-1, j][1] + self.positions[timestep-2, j][1])
+                # Touch sensors
+                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 4] * (self.positions[timestep-1, j][1] < ground_height)
 
             activation += self.weights_sh[h, self.n_points*4 + N_SIN_WAVES]     * \
                                                         (self.goal[None][0] - self.center[timestep][0])
@@ -234,6 +279,7 @@ class Simulation:
         self.simulate_neural_network_hm(timestep)
 
         self.simulate_springs(timestep)
+        # print(self.motor_neuron_values[timestep, 0])
 
         self.simulate_objects(timestep)
 
@@ -263,7 +309,7 @@ class Simulation:
                 self.weights_sh[h, N_SIN_WAVES + 4*j + 1] -= LEARNING_RATE * self.weights_sh[h, N_SIN_WAVES + 4*j + 1]
                 self.weights_sh[h, N_SIN_WAVES + 4*j + 2] -= LEARNING_RATE * self.weights_sh[h, N_SIN_WAVES + 4*j + 2]
                 self.weights_sh[h, N_SIN_WAVES + 4*j + 3] -= LEARNING_RATE * self.weights_sh[h, N_SIN_WAVES + 4*j + 3]
-
+                self.weights_sh[h, N_SIN_WAVES + 4*j + 4] -= LEARNING_RATE * self.weights_sh[h, N_SIN_WAVES + 4*j + 4]
 
             self.weights_sh[h, self.n_points*4 + N_SIN_WAVES] -= LEARNING_RATE * self.weights_sh[h, self.n_points*4 + N_SIN_WAVES]
             self.weights_sh[h, self.n_points*4 + N_SIN_WAVES + 1] -= LEARNING_RATE * self.weights_sh[h, self.n_points*4 + N_SIN_WAVES + 1]
@@ -279,9 +325,11 @@ class Simulation:
 
     def optimize_brain(self, n_iters=10):
         for iteration in range(n_iters): 
+            start = time.time()
             self.run_simulation()
             self.update_weights()
-            print(f'Iteration {iteration} loss: {self.loss}')
+            lapsed = time.time() - start
+            print(f'Iteration {iteration} loss: {self.loss} ({lapsed} seconds)')
 
         return self.loss
 
@@ -296,7 +344,10 @@ class Simulation:
 
             for object_idx in range(self.n_points):
                 x,y = self.positions[timestep, object_idx]
-                gui.circle((x,y), color=0x0, radius=5)
+                if object_idx <= 1: # paint red
+                    gui.circle((x,y), color=0xFF0000, radius=5)
+                else:
+                    gui.circle((x,y), color=0x0, radius=5)
 
             for spring_idx in range(self.n_springs):
                 object_a_idx = self.spring_anchor_a[spring_idx]
@@ -307,8 +358,6 @@ class Simulation:
                     gui.line(position_a, position_b, color=0x1, radius=3)
                 else:
                     gui.line(position_a, position_b, color=0x1)
-
-
 
             gui.show('test' + str(frame_offset + timestep) + '.png')
 
@@ -328,6 +377,12 @@ class Simulation:
 
             self.loss[None] = 0
             self.compute_loss()
+
+        # plt.plot(self.spring_restoring_forces.to_numpy()[:,0,0])
+        # spring_idx = 0
+        # plt.plot(self.motor_neuron_values.to_numpy()[:,spring_idx])
+        # plt.plot(self.spring_resting_lengths[spring_idx] + self.spring_actuation[spring_idx] * self.motor_neuron_values.to_numpy()[:, spring_idx])
+        # plt.show()
 
         return self.loss
 
