@@ -23,23 +23,13 @@ class SpringRobot:
         self.n_points = constraints['n_points']
 
         self.generate_random_body_points(self.n_points) # Initialize random genome
+        # self.generate_box_body_points()
+        # self.generate_spring_body_points()
 
-    def run(self):
-        '''
-        Call functions from simulation.py to run the genome.
-        '''
-        # self.build_body()
-        # self.fitness = simulate(self.body)
-
-        # initialize brain
-        initialize_body(self)
-        initialize_brain()
-
-        final_loss = optimize_brain(10)
-        self.fitness = final_loss
-
-        # Visualize last 'optimized' robot
-        # run_simulation()
+    # def run(self):
+    #     '''
+    #     Call functions from simulation.py to run the genome.
+    #     '''
 
     def generate_valid_point(self, points):
         '''
@@ -93,6 +83,13 @@ class SpringRobot:
             points = np.concatenate([points, [new_point]])
         
         self.body_points = points
+
+    def generate_box_body_points(self):
+        '''
+        Generate a box-shaped body
+        '''
+        points = np.array([[0,0], [1,0], [1,1], [0,1]])
+        self.body_points = points.astype(np.float32)
 
     
     def get_sim_body_points(self, x_start, y_start, body_size):
