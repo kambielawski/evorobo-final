@@ -19,15 +19,14 @@ exp.pickle_evo()
 
 '''
 
-constraints = {
-    'min_spring_length': 1,
-    'max_spring_length': 2,
-    'n_points': 5
-}
 exp_params = {
     'population_size': 1,
     'max_generations': 30,
-    'robot_constraints': constraints
+    'robot_constraints': {
+        'min_spring_length': 1,
+        'max_spring_length': 2,
+        'n_points': 5
+    }
 }
 
 ########

@@ -12,9 +12,10 @@ from robot import SpringRobot
 # Initialization
 ti.init(arch=ti.metal, default_fp = ti.f32)
 
-ground_height = 0.15
+ground_height = 0.18
 dt = 0.02
 gravity = -9.8
+# gravity = -19.6
 sim_damping = 1.0
 # spring_stiffness = 30.0
 spring_stiffness = 2000.0
@@ -169,7 +170,7 @@ class Simulation:
             # Actuation: change the resting state of the spring to oscillate (open-loop)
             spring_resting_length = self.spring_resting_lengths[spring_idx] + \
                                     self.spring_actuation[spring_idx] * \
-                                    self.motor_neuron_values[timestep, spring_idx] * 0.4
+                                    self.motor_neuron_values[timestep, spring_idx] * 0.2
                                     # 0.05*ti.sin(spring_frequency[spring_idx] * timestep*1.0)
 
             # Absolute value
