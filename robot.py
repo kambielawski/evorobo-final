@@ -30,9 +30,9 @@ class SpringRobot:
         self.max_spring_length = constraints['max_spring_length']
         self.n_points = constraints['n_points']
 
-        self.generate_random_body_points(self.n_points) # Initialize random genome
+        # self.generate_random_body_points(self.n_points) # Initialize random genome
         # self.generate_box_body_points()
-        # self.generate_pentagon_body_points()
+        self.generate_pentagon_body_points()
         # self.generate_spring_body_points()
 
     # def run(self):
