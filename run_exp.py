@@ -21,8 +21,8 @@ exp.pickle_evo()
 
 exp_params = {
     'population_size': 1,
-    'max_generations': 6,
-    'inner_iterations': 20,
+    'max_generations': 3,
+    'inner_iterations': 10,
     'robot_constraints': {
         'min_spring_length': 1,
         'max_spring_length': 2,

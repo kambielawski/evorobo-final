@@ -407,7 +407,8 @@ class Simulation:
             if np.isnan(self.loss.to_numpy()):
                 print('Loss is NaN')
                 break
-            self.update_weights()
+            if iteration < n_iters - 1:
+                self.update_weights()
             lapsed = time.time() - start
             print(f'Iteration {iteration} loss: {self.loss} ({lapsed} seconds)')
         
