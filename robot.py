@@ -5,7 +5,14 @@ import numpy as np
 
 # from simulation import Simulation
 
-ACTUATION_INIT_FREQ = 0.5
+ACTUATION_INIT_FREQ = 0.35
+
+class Brain:
+    def __init__(self, hidden_neuron_weights=None, motor_neuron_weights=None, hidden_neuron_bias=None, motor_neuron_bias=None): 
+        self.hidden_neuron_weights = hidden_neuron_weights
+        self.motor_neuron_weights = motor_neuron_weights
+        self.hidden_neuron_bias = hidden_neuron_bias
+        self.motor_neuron_bias = motor_neuron_bias
 
 class SpringRobot:
     '''
@@ -16,6 +23,7 @@ class SpringRobot:
         self.fitness = 0
         self.body_points = None   # A data structure interpretable by taichi
         self.simulated = False
+        self.brain = Brain()
 
         self.constraints = constraints
         self.min_spring_length = constraints['min_spring_length']
@@ -24,6 +32,7 @@ class SpringRobot:
 
         self.generate_random_body_points(self.n_points) # Initialize random genome
         # self.generate_box_body_points()
+        # self.generate_pentagon_body_points()
         # self.generate_spring_body_points()
 
     # def run(self):
@@ -89,6 +98,19 @@ class SpringRobot:
         Generate a box-shaped body
         '''
         points = np.array([[0,0], [1,0], [1,1], [0,1]])
+        self.body_points = points.astype(np.float32)
+
+    def generate_pentagon_body_points(self):
+        '''
+        Generate a pentagon-shaped body
+        '''
+        points = np.array([
+            [0, 1.0],    # Vertex 1 (Approximately (0, 1))
+            [0.9510565162951535, 0.3090169943749474],  # Vertex 2
+            [0.5877852522924731, -0.8090169943749475], # Vertex 3
+            [-0.587785252292473, -0.8090169943749475], # Vertex 4
+            [-0.9510565162951536, 0.3090169943749473]  # Vertex 5
+        ])
         self.body_points = points.astype(np.float32)
 
     

@@ -1,0 +1,9 @@
+{
+    'population_size': 10,
+    'max_generations': 10,
+    'robot_constraints': {
+        'min_spring_length': 1,
+        'max_spring_length': 2,
+        'n_points': 5
+    }
+}

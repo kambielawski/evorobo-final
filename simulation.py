@@ -1,5 +1,6 @@
 import os
 import time
+import pickle
 import math
 import taichi as ti
 import numpy as np
@@ -13,32 +14,37 @@ from robot import SpringRobot
 ti.init(arch=ti.metal, default_fp = ti.f32)
 
 ground_height = 0.18
-dt = 0.02
+dt = 0.018
 gravity = -9.8
 # gravity = -19.6
 sim_damping = 1.0
 # spring_stiffness = 30.0
-spring_stiffness = 2000.0
+spring_stiffness = 1500.0
 ITERS = 10
 # LEARNING_RATE = 0.01
-LEARNING_RATE = 1.0
+LEARNING_RATE = 0.5
 N_HIDDEN_NEURONS = 32
-N_SIN_WAVES = 4
+N_SIN_WAVES = 2
 GOAL_POSITION = [0.9,0.2]
 
 
 @ti.data_oriented
 class Simulation:
     def __init__(self, robot):
+        self.robot = robot
         self.robot_starting_points = robot.get_sim_body_points(x_start=0.2, y_start=0.2, body_size=0.2)
         self.springs = robot.generate_body_springs(self.robot_starting_points)
         self.n_points = len(self.robot_starting_points)
         self.n_springs = len(self.springs)
-        self.max_steps = 150
+        self.max_steps = 200
+        self.losses = []
 
         self.initialize_fields()
         self.initialize_body()
-        self.initialize_brain()
+        if robot.brain.hidden_neuron_bias is not None:
+            self.initialize_from_brain()
+        else:
+            self.initialize_random_brain()
 
     def n_sensors(self):
         # n_sin_waves simulates central pattern generators
@@ -57,7 +63,7 @@ class Simulation:
         self.positions = vec()
         self.velocities = vec()
         self.spring_restoring_forces = vec()
-        self.spring_forces_on_objects = vec()
+        self.net_force_on_objects = vec()
         self.center = vec() # Center of the robot
         self.goal = vec()
 
@@ -74,7 +80,7 @@ class Simulation:
         ti.root.dense(ti.i, self.max_steps).dense(ti.j, self.n_points).place(self.velocities.grad)
         ti.root.dense(ti.i, self.n_springs).place(self.spring_anchor_a, self.spring_anchor_b, self.spring_resting_lengths)
         ti.root.dense(ti.i, self.max_steps).dense(ti.j, self.n_springs).place(self.spring_restoring_forces)
-        ti.root.dense(ti.i, self.max_steps).dense(ti.j, self.n_points).place(self.spring_forces_on_objects)
+        ti.root.dense(ti.i, self.max_steps).dense(ti.j, self.n_points).place(self.net_force_on_objects)
         ti.root.dense(ti.i, self.n_springs).place(self.spring_actuation)
         ti.root.dense(ti.i, self.n_springs).place(self.spring_frequency)
         ti.root.dense(ti.i, self.max_steps).place(self.center)
@@ -125,14 +131,15 @@ class Simulation:
 
         for i in range(self.max_steps):
             for j in range(self.n_points):
-                self.spring_forces_on_objects[i,j][0] = 0.0
-                self.spring_forces_on_objects[i,j][1] = 0.0
+                self.net_force_on_objects[i,j][0] = 0.0
+                self.net_force_on_objects[i,j][1] = 0.0
 
         for i in range(self.max_steps):
             for j in range(N_HIDDEN_NEURONS):
                 self.hidden_neuron_values[i,j] = 0.0
 
-    def initialize_brain(self):
+    def initialize_random_brain(self):
+        print('INITIALIZING BRAIN')
         for h in range(N_HIDDEN_NEURONS):
             self.hidden_neuron_bias[h] = (np.random.randn() * 2 - 1) * 0.02
             for s in range(self.n_sensors()):
@@ -142,6 +149,18 @@ class Simulation:
             self.motor_neuron_bias[s] = (np.random.randn() * 2 - 1) * 0.02
             for h in range(N_HIDDEN_NEURONS):
                 self.weights_hm[s, h] = (np.random.randn() * 2 - 1) * 0.02
+
+    def initialize_from_brain(self):
+        for h in range(N_HIDDEN_NEURONS):
+            self.hidden_neuron_bias[h] = self.robot.brain.hidden_neuron_bias[h]
+            for s in range(self.n_sensors()):
+                self.weights_sh[h, s] = self.robot.brain.weights_sh[h, s]
+
+        for s in range(self.n_springs):
+            self.motor_neuron_bias[s] = self.robot.brain.motor_neuron_bias[s]
+            for h in range(N_HIDDEN_NEURONS):
+                self.weights_hm[s, h] = self.robot.brain.weights_hm[s, h]
+
 
     @ti.kernel
     def compute_loss(self):
@@ -159,39 +178,86 @@ class Simulation:
 
     @ti.kernel
     def simulate_springs(self, timestep: ti.i32):
+        for object_idx in range(self.n_points):
+            self.net_force_on_objects[timestep, object_idx].fill(0.0)
+            self.net_force_on_objects[timestep, object_idx].fill(0.0)
+        
         for spring_idx in range(self.n_springs):
             object_a_idx = self.spring_anchor_a[spring_idx]
             object_b_idx = self.spring_anchor_b[spring_idx]
             position_a = self.positions[timestep-1, object_a_idx]
             position_b = self.positions[timestep-1, object_b_idx]
-            dist = position_a - position_b
+            
+            if position_a[1] < ground_height:
+                self.positions[timestep-1, object_a_idx][1] = ground_height
+            if position_b[1] < ground_height:
+                self.positions[timestep-1, object_b_idx][1] = ground_height
+            
+            dist = self.positions[timestep-1, object_a_idx] - self.positions[timestep-1, object_b_idx]
             length = dist.norm()
 
             # Actuation: change the resting state of the spring to oscillate (open-loop)
             spring_resting_length = self.spring_resting_lengths[spring_idx] + \
                                     self.spring_actuation[spring_idx] * \
-                                    self.motor_neuron_values[timestep, spring_idx] * 0.2
+                                    self.motor_neuron_values[timestep, spring_idx] * 0.3
                                     # 0.05*ti.sin(spring_frequency[spring_idx] * timestep*1.0)
 
             # Absolute value
             # spring_unhappiness = ti.abs(2*(length - spring_resting_length))
-            spring_unhappiness = 2*(length - spring_resting_length)
+            spring_unhappiness = 8*(length - spring_resting_length) # 8 is good, with 0.3 actuation (box robot, 0.3 freq)
             self.spring_restoring_forces[timestep, spring_idx] = (dt * spring_stiffness * spring_unhappiness / length) * dist
 
             # Preservation of forces...
-            self.spring_forces_on_objects[timestep, object_a_idx] += -self.spring_restoring_forces[timestep, spring_idx]
-            self.spring_forces_on_objects[timestep, object_b_idx] += self.spring_restoring_forces[timestep, spring_idx]
+            spring_restoring_on_a = -self.spring_restoring_forces[timestep, spring_idx]
+            spring_restoring_on_b = self.spring_restoring_forces[timestep, spring_idx]
 
-            old_position_a = self.positions[timestep-1, object_a_idx]
-            old_position_b = self.positions[timestep-1, object_b_idx]
-            if old_position_a[1] < ground_height and self.spring_forces_on_objects[timestep, object_a_idx][1] < 0.0: # Transfer y direction force to other object
-                # Force on object connected to object in ground
-                self.spring_forces_on_objects[timestep, object_b_idx] += -0.1*self.spring_forces_on_objects[timestep, object_a_idx]
-                # Force on object in grond
-                self.spring_forces_on_objects[timestep, object_a_idx] += -0.1*self.spring_forces_on_objects[timestep, object_a_idx]
-            if old_position_b[1] < ground_height and self.spring_forces_on_objects[timestep, object_b_idx][1] < 0.0: # Transfer y direction force to other object
-                self.spring_forces_on_objects[timestep, object_a_idx] += -0.1*self.spring_forces_on_objects[timestep, object_b_idx]
-                self.spring_forces_on_objects[timestep, object_b_idx] += -0.1*self.spring_forces_on_objects[timestep, object_b_idx]
+            self.net_force_on_objects[timestep, object_a_idx] += spring_restoring_on_a
+            self.net_force_on_objects[timestep, object_b_idx] += spring_restoring_on_b
+
+            # old_position_a = self.positions[timestep-1, object_a_idx]
+            # old_position_b = self.positions[timestep-1, object_b_idx]
+            # old_velocity_a = self.velocities[timestep-1, object_a_idx]
+            # old_velocity_b = self.velocities[timestep-1, object_b_idx]
+            # Apply restitution force in y direction proportional to depth of penetration
+            # if old_position_a[1] < ground_height:
+            #     # Transfer spring restoring force to other object
+            #     self.net_force_on_objects[timestep, object_b_idx] += self.spring_restoring_forces[timestep, spring_idx]
+            #     # Zero out spring restoring force on object in ground
+            #     self.net_force_on_objects[timestep, object_a_idx] *= ti.Vector([0.3,0.0])
+            #     # Add restitution force in Y direction proportional to depth and previous velocity
+
+
+
+            # if old_position_b[1] < ground_height:
+            #     self.net_force_on_objects[timestep, object_a_idx] += -self.spring_restoring_forces[timestep, spring_idx]
+            #     self.net_force_on_objects[timestep, object_b_idx] *= ti.Vector([0.3,0.0])
+
+            #     if self.net_force_on_objects[timestep, object_a_idx][1] < 0.0: 
+            #         self.net_force_on_objects[timestep, object_b_idx][1] += 
+                # penetration_depth = ground_height - old_position_b[1]
+                # self.net_force_on_objects[timestep, object_b_idx][1] += penetration_depth * 1000
+                # if old_velocity_b[1] < 0:
+                #     self.net_force_on_objects[timestep, object_b_idx][1] += -old_velocity_b[1] * 10
+
+                # self.net_force_on_objects[timestep, object_a_idx][0] += -0.1*self.net_force_on_objects[timestep, object_a_idx][0]
+                # self.net_force_on_objects[timestep, object_a_idx][1] += -0.9*self.net_force_on_objects[timestep, object_a_idx][1]
+
+
+
+            # if old_position_a[1] < ground_height: # and self.net_force_on_objects[timestep, object_a_idx][1] < 0.0: # Transfer y direction force to other object
+            #     # Force on object connected to object in ground
+            #     self.net_force_on_objects[timestep, object_b_idx][0] += -0.1*self.net_force_on_objects[timestep, object_a_idx][0]
+            #     self.net_force_on_objects[timestep, object_b_idx][1] += -0.9*self.net_force_on_objects[timestep, object_a_idx][0]
+            #     # Force on object in ground
+            #     self.net_force_on_objects[timestep, object_a_idx][0] += -0.1*self.net_force_on_objects[timestep, object_a_idx][0]
+            #     self.net_force_on_objects[timestep, object_a_idx][1] += -0.9*self.net_force_on_objects[timestep, object_a_idx][1]
+            #     # self.net_force_on_objects[timestep, object_a_idx][1] += -0.8*self.net_force_on_objects[timestep, object_a_idx][1]
+            # if old_position_b[1] < ground_height: # and self.net_force_on_objects[timestep, object_b_idx][1] < 0.0: # Transfer y direction force to other object
+            #     self.net_force_on_objects[timestep, object_a_idx][0] += -0.1*self.net_force_on_objects[timestep, object_b_idx][0]
+            #     self.net_force_on_objects[timestep, object_a_idx][1] += -0.9*self.net_force_on_objects[timestep, object_b_idx][1]
+
+            #     self.net_force_on_objects[timestep, object_b_idx][0] += -0.1*self.net_force_on_objects[timestep, object_b_idx][0]
+            #     self.net_force_on_objects[timestep, object_b_idx][1] += -0.9*self.net_force_on_objects[timestep, object_b_idx][1]
 
     @ti.kernel
     def simulate_objects(self, timestep: ti.i32):
@@ -201,21 +267,21 @@ class Simulation:
             # Update velocity...
             old_velocity = (1-sim_damping) * self.velocities[timestep-1, object_idx] \
             + dt*gravity * ti.Vector([0,1]) \
-            + dt*(self.spring_forces_on_objects[timestep, object_idx]) # - self.spring_forces_on_objects[timestep-1, object_idx])
+            + dt*(self.net_force_on_objects[timestep, object_idx]) # - self.net_force_on_objects[timestep-1, object_idx])
 
-            if old_position[1] < ground_height and old_velocity[1] < 0:
-            #     # old_position = ti.Vector([old_position[0], ground_height])
+            if old_position[1] <= ground_height and old_velocity[1] < 0:
+                # old_position = ti.Vector([old_position[0], ground_height])
 
-            #     # Friction x direction, restitution y direction
-            #     # old_velocity = ti.Vector([0.5*old_velocity[0],-0.8*old_velocity[1]])
+                # Friction x direction, restitution y direction
+                # old_velocity = ti.Vector([0.5*old_velocity[0],-0.8*old_velocity[1]])
 
-            #     # ZERO Friction x direction, restitution y direction
-            #     # old_velocity = ti.Vector([0.0,-0.8*old_velocity[1]])
+                # ZERO Friction x direction, restitution y direction
+                # old_velocity = ti.Vector([0.0,-0.8*old_velocity[1]])
 
             #     # ZERO friction, perfect restitution
                 # old_velocity = ti.Vector([0.0,-old_velocity[1]])
                   # Friction x direction, PERFECT restitution y direction
-                old_velocity = ti.Vector([0.5*old_velocity[0],-0.8*old_velocity[1]])
+                old_velocity = ti.Vector([0.1*old_velocity[0],-0.9*old_velocity[1]])
 
                 # old_velocity = ti.Vector([-old_velocity[0],-old_velocity[1]])
 
@@ -235,7 +301,7 @@ class Simulation:
                                                         2*math.pi / N_SIN_WAVES * s)
             # 4 sensors for each object
             for j in ti.static(range(self.n_points)):
-                offset = self.positions[timestep, j] - self.center[timestep]
+                offset = self.positions[timestep-1, j] - self.center[timestep]
                 # Relative x,y coordinates
                 activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j] * offset[0]     # relative x coordinate
                 activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 1] * offset[1] # relative y coordinate
@@ -243,8 +309,9 @@ class Simulation:
                 # activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 2] * self.positions[timestep, j][0]
                 # activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 3] * self.positions[timestep, j][1]
                 # Jerk sensors
-                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 2] * (self.positions[timestep, j][0] - 2*self.positions[timestep-1, j][0] + self.positions[timestep-2, j][0])
-                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 3] * (self.positions[timestep, j][1] - 2*self.positions[timestep-1, j][1] + self.positions[timestep-2, j][1])
+                # if timestep >= 3:
+                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 2] * (self.positions[timestep-1, j][0] - 2*self.positions[timestep-2, j][0] + self.positions[timestep-3, j][0])
+                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 3] * (self.positions[timestep-1, j][1] - 2*self.positions[timestep-2, j][1] + self.positions[timestep-3, j][1])
                 # Touch sensors
                 activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 4] * (self.positions[timestep-1, j][1] < ground_height)
 
@@ -269,12 +336,18 @@ class Simulation:
     @ti.kernel
     def compute_center(self, timestep : ti.i32):
         for object_idx in range(self.n_points):
-            self.center[timestep] += self.positions[timestep, object_idx] / self.n_points
+            if object_idx == 0:
+                self.center[timestep].fill(0.0)
+            self.center[timestep] += self.positions[timestep-1, object_idx] / self.n_points
 
     # Simulate
     def step_once(self, timestep : ti.i32):
-
         self.compute_center(timestep)
+        # if timestep == 1:
+        #     print(self.center[1])
+        #     # print(self.positions[timestep, 0])
+        #     print(self.positions[0, 0])
+        #     print(self.velocities[0, 0])
 
         self.simulate_neural_network_sh(timestep)
         self.simulate_neural_network_hm(timestep)
@@ -327,11 +400,21 @@ class Simulation:
     def optimize_brain(self, n_iters=10):
         for iteration in range(n_iters): 
             start = time.time()
+            # self.initialize_fields()
+            # self.initialize_body()
             self.run_simulation()
+            self.losses.append(self.loss.to_numpy())
+            if np.isnan(self.loss.to_numpy()):
+                print('Loss is NaN')
+                break
             self.update_weights()
             lapsed = time.time() - start
             print(f'Iteration {iteration} loss: {self.loss} ({lapsed} seconds)')
-
+        
+        self.robot.brain.hidden_neuron_bias = self.hidden_neuron_bias.to_numpy()
+        self.robot.brain.motor_neuron_bias = self.motor_neuron_bias.to_numpy()
+        self.robot.brain.weights_sh = self.weights_sh.to_numpy()
+        self.robot.brain.weights_hm = self.weights_hm.to_numpy()
         return self.loss
 
     # Draw
@@ -367,7 +450,14 @@ class Simulation:
         os.system(f'ffmpeg -i test%d.png {file_name}')
         mp4 = open(file_name, 'rb').read()
         data_url = 'data:video/mp4;base64,' + b64encode(mp4).decode()
+        os.system(f'rm test*.png')
         return HTML('<video width=512 controls> <source src="%s" type="video/mp4"></video>' % data_url)
+
+    # --------------------------------
+
+    def save_robot(self, filename):
+        with open(filename, 'wb') as pf:
+            pickle.dump(self, pf)
 
     # --------------------------------
 
