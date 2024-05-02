@@ -310,8 +310,12 @@ class Simulation:
                 # activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 3] * self.positions[timestep, j][1]
                 # Jerk sensors
                 # if timestep >= 3:
-                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 2] * (self.positions[timestep-1, j][0] - 2*self.positions[timestep-2, j][0] + self.positions[timestep-3, j][0])
-                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 3] * (self.positions[timestep-1, j][1] - 2*self.positions[timestep-2, j][1] + self.positions[timestep-3, j][1])
+                # activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 2] * (self.positions[timestep-1, j][0] - 2*self.positions[timestep-2, j][0] + self.positions[timestep-3, j][0])
+                # activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 3] * (self.positions[timestep-1, j][1] - 2*self.positions[timestep-2, j][1] + self.positions[timestep-3, j][1])
+                # Acceleration sensors:
+                # if timestep >= 2:
+                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 2] * (self.velocities[timestep-1, j][0] - self.velocities[timestep-2, j][0])
+                activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 3] * (self.velocities[timestep-1, j][1] - self.velocities[timestep-2, j][1])
                 # Touch sensors
                 activation += 0.1*self.weights_sh[h, N_SIN_WAVES + 4*j + 4] * (self.positions[timestep-1, j][1] < ground_height)
 
@@ -321,7 +325,7 @@ class Simulation:
                                                         (self.goal[None][1] - self.center[timestep][1])
 
             activation = ti.tanh(activation + self.hidden_neuron_bias[h])
-            self.hidden_neuron_values[timestep, h] = activation    
+            self.hidden_neuron_values[timestep, h] = activation
 
     @ti.kernel
     def simulate_neural_network_hm(self, timestep : ti.i32):
