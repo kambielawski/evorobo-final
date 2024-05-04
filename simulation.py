@@ -17,12 +17,15 @@ ground_height = 0.18
 dt = 0.018
 gravity = -9.8
 # gravity = -19.6
-sim_damping = 1.0
+
+sim_damping = 0.9
 # spring_stiffness = 30.0
-spring_stiffness = 1500.0
+spring_stiffness = 4000.0
 ITERS = 10
 # LEARNING_RATE = 0.01
-LEARNING_RATE = 0.5
+# LEARNING_RATE = 0.5
+LEARNING_RATE = 2.0
+
 N_HIDDEN_NEURONS = 32
 N_SIN_WAVES = 2
 GOAL_POSITION = [0.9,0.2]
@@ -199,7 +202,7 @@ class Simulation:
             # Actuation: change the resting state of the spring to oscillate (open-loop)
             spring_resting_length = self.spring_resting_lengths[spring_idx] + \
                                     self.spring_actuation[spring_idx] * \
-                                    self.motor_neuron_values[timestep, spring_idx] * 0.3
+                                    self.motor_neuron_values[timestep, spring_idx] * 0.15
                                     # 0.05*ti.sin(spring_frequency[spring_idx] * timestep*1.0)
 
             # Absolute value
