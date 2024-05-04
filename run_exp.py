@@ -1,4 +1,5 @@
 import argparse
+import time
 
 from evolution import Evolution
 from robot import SpringRobot
@@ -21,7 +22,7 @@ exp.pickle_evo()
 
 exp_params = {
     'population_size': 1,
-    'max_generations': 3,
+    'max_generations': 50,
     'inner_iterations': 15,
     'robot_constraints': {
         'min_spring_length': 1,
@@ -32,8 +33,14 @@ exp_params = {
 
 ########
 
+start = time.time()
+
 evo_run = Evolution(exp_params)
 evo_run.evolve()
 evo_run.pickle_evo('evo_run.pkl')
 
-print(evo_run.best_robot_over_generations)
+total_time = time.time() - start
+print('Experiment Time: ', total_time)
+print('Avg. time per generation: ', total_time / exp_params['max_generations'])
+
+# print(evo_run.best_robot_over_generations)

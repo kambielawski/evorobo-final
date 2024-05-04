@@ -17,16 +17,16 @@ ground_height = 0.18
 dt = 0.018
 gravity = -9.8
 # gravity = -19.6
-sim_damping = 1.0
+sim_damping = 0.9
 # spring_stiffness = 30.0
-spring_stiffness = 1500.0
+spring_stiffness = 4000.0
 ITERS = 10
 # LEARNING_RATE = 0.01
 # LEARNING_RATE = 0.5
-LEARNING_RATE = 0.2
+LEARNING_RATE = 2.0
 # LEARNING_RATE = 2.0
-N_HIDDEN_NEURONS = 32
-N_SIN_WAVES = 4
+N_HIDDEN_NEURONS = 16
+N_SIN_WAVES = 2
 GOAL_POSITION = [0.9,0.2]
 
 
@@ -88,11 +88,11 @@ class Simulation:
 
         ti.root.dense(ti.ijk, (self.max_steps, self.n_springs, N_HIDDEN_NEURONS)).place(self.hidden_neuron_values)
         ti.root.dense(ti.ij, (self.max_steps, self.n_springs)).place(self.motor_neuron_values)
-        ti.root.dense(ti.i, N_HIDDEN_NEURONS).place(self.hidden_neuron_bias)
-        ti.root.place(self.motor_neuron_bias)
+        ti.root.dense(ti.ij, (self.n_springs, N_HIDDEN_NEURONS)).place(self.hidden_neuron_bias)
+        ti.root.dense(ti.i, self.n_springs).place(self.motor_neuron_bias)
 
-        ti.root.dense(ti.ij, (N_HIDDEN_NEURONS, self.n_sensors())).place(self.weights_sh)
-        ti.root.dense(ti.i, N_HIDDEN_NEURONS).place(self.weights_hm)
+        ti.root.dense(ti.ijk, (self.n_springs, N_HIDDEN_NEURONS, self.n_sensors())).place(self.weights_sh)
+        ti.root.dense(ti.ij, (self.n_springs, N_HIDDEN_NEURONS)).place(self.weights_hm)
 
         self.loss = ti.field(dtype=ti.f32, shape=()) # 0-dimensional tensor (i.e. fp scalar)
 
@@ -145,25 +145,25 @@ class Simulation:
 
     def initialize_random_brain(self):
         print('INITIALIZING BRAIN')
-        for h in range(N_HIDDEN_NEURONS):
-            self.hidden_neuron_bias[h] = (np.random.randn() * 2 - 1) * 0.02
-            for s in range(self.n_sensors()):
-                self.weights_sh[h, s] = (np.random.randn() * 2 - 1) * 0.02
-
-        # for s in range(self.n_springs):
-        self.motor_neuron_bias[None] = (np.random.randn() * 2 - 1) * 0.02
-        for h in range(N_HIDDEN_NEURONS):
-            self.weights_hm[h] = (np.random.randn() * 2 - 1) * 0.02
+        for sp in range(self.n_springs):
+            for h in range(N_HIDDEN_NEURONS):
+                self.hidden_neuron_bias[sp, h] = (np.random.randn() * 2 - 1) * 0.02
+                for s in range(self.n_sensors()):
+                    self.weights_sh[sp, h, s] = (np.random.randn() * 2 - 1) * 0.02
+            self.motor_neuron_bias[s] = (np.random.randn() * 2 - 1) * 0.02
+            for h in range(N_HIDDEN_NEURONS):
+                self.weights_hm[sp, h] = (np.random.randn() * 2 - 1) * 0.02
 
     def initialize_from_brain(self):
-        for h in range(N_HIDDEN_NEURONS):
-            self.hidden_neuron_bias[h] = self.robot.brain.hidden_neuron_bias[h]
-            for s in range(self.n_sensors()):
-                self.weights_sh[h, s] = self.robot.brain.weights_sh[h, s]
+        for sp in range(self.n_springs):
+            for h in range(N_HIDDEN_NEURONS):
+                self.hidden_neuron_bias[sp, h] = self.robot.brain.hidden_neuron_bias[sp, h]
+                for s in range(self.n_sensors()):
+                    self.weights_sh[sp, h, s] = self.robot.brain.weights_sh[sp, h, s]
 
-        self.motor_neuron_bias[None] = self.robot.brain.motor_neuron_bias
-        for h in range(N_HIDDEN_NEURONS):
-            self.weights_hm[h] = self.robot.brain.weights_hm[h]
+            self.motor_neuron_bias[sp] = self.robot.brain.motor_neuron_bias[sp]
+            for h in range(N_HIDDEN_NEURONS):
+                self.weights_hm[sp, h] = self.robot.brain.weights_hm[sp, h]
 
 
     @ti.kernel
@@ -171,7 +171,7 @@ class Simulation:
         # self.loss[None] -= self.positions[self.max_steps-1, 1][0]
         # mean x value
         # self.loss[None] -= (self.positions[self.max_steps-1, 0][0] + \
-        #                     self.positions[self.max_steps-1, 1][0] + \
+        #                     self.positions[self.max_steps-1, -1][0]) / 2
         #                     self.positions[self.max_steps-1, 2][0] + \
         #                     self.positions[self.max_steps-1, 3][0]) / 4
         
@@ -203,23 +203,23 @@ class Simulation:
 
             # Central pattern generators
             for s in ti.static(range(N_SIN_WAVES)):
-                activation += self.weights_sh[h, s] * ti.sin(50*timestep * dt + \
+                activation += self.weights_sh[spring_idx, h, s] * ti.sin(50*timestep * dt + \
                                                         2*math.pi / N_SIN_WAVES * s)
             # Relative x,y coordinates for a and b objects
-            activation += self.weights_sh[h, N_SIN_WAVES] * offset_a[0]     # relative x coordinate
-            activation += self.weights_sh[h, N_SIN_WAVES + 1] * offset_a[1] # relative y coordinate
-            activation += self.weights_sh[h, N_SIN_WAVES + 2] * offset_b[0]     # relative x coordinate
-            activation += self.weights_sh[h, N_SIN_WAVES + 3] * offset_b[1] # relative y coordinate
+            activation += 0.1 * self.weights_sh[spring_idx, h, N_SIN_WAVES] * offset_a[0]     # relative x coordinate
+            activation += 0.1 * self.weights_sh[spring_idx, h, N_SIN_WAVES + 1] * offset_a[1] # relative y coordinate
+            activation += 0.1 * self.weights_sh[spring_idx, h, N_SIN_WAVES + 2] * offset_b[0]     # relative x coordinate
+            activation += 0.1 * self.weights_sh[spring_idx, h, N_SIN_WAVES + 3] * offset_b[1] # relative y coordinate
             # Acceleration sensors:
-            activation += self.weights_sh[h, N_SIN_WAVES + 4] * accel_a[0]
-            activation += self.weights_sh[h, N_SIN_WAVES + 5] * accel_a[1]
-            activation += self.weights_sh[h, N_SIN_WAVES + 6] * accel_b[0]
-            activation += self.weights_sh[h, N_SIN_WAVES + 7] * accel_b[1]
+            activation += 0.1 * self.weights_sh[spring_idx, h, N_SIN_WAVES + 4] * accel_a[0]
+            activation += 0.1 * self.weights_sh[spring_idx, h, N_SIN_WAVES + 5] * accel_a[1]
+            activation += 0.1 * self.weights_sh[spring_idx, h, N_SIN_WAVES + 6] * accel_b[0]
+            activation += 0.1 * self.weights_sh[spring_idx, h, N_SIN_WAVES + 7] * accel_b[1]
             # Touch sensors
             # activation += 0.5*self.weights_sh[h, N_SIN_WAVES + 8] * touch_a
             # activation += 0.5*self.weights_sh[h, N_SIN_WAVES + 9] * touch_b
 
-            activation = ti.tanh(activation + self.hidden_neuron_bias[h])
+            activation = ti.tanh(activation + self.hidden_neuron_bias[spring_idx, h])
             self.hidden_neuron_values[timestep, spring_idx, h] = activation
 
     @ti.func
@@ -227,9 +227,9 @@ class Simulation:
         # for spring_idx in range(self.n_springs):
         activation = 0.0
         for h in ti.static(range(N_HIDDEN_NEURONS)):
-            activation += self.weights_hm[h] * self.hidden_neuron_values[timestep, spring_idx, h]
+            activation += self.weights_hm[spring_idx, h] * self.hidden_neuron_values[timestep, spring_idx, h]
 
-        activation = ti.tanh(activation + self.motor_neuron_bias[None])
+        activation = ti.tanh(activation + self.motor_neuron_bias[spring_idx])
         self.motor_neuron_values[timestep, spring_idx] = activation
 
     @ti.kernel
@@ -253,13 +253,16 @@ class Simulation:
             
             if position_a[1] < ground_height:
                 self.positions[timestep-1, object_a_idx][1] = ground_height
+                # Add normal force 
+                # self.net_force_on_objects[timestep, object_a_idx] += ti.Vector([0.0, -gravity])
             if position_b[1] < ground_height:
                 self.positions[timestep-1, object_b_idx][1] = ground_height
+                # self.net_force_on_objects[timestep, object_b_idx] += ti.Vector([0.0, -gravity])
 
             # Actuation: change the resting state of the spring to oscillate (open-loop)
             spring_resting_length = self.spring_resting_lengths[spring_idx] + \
                                     self.spring_actuation[spring_idx] * \
-                                    self.motor_neuron_values[timestep, spring_idx] * 0.3 # 0.3 is the monolithic
+                                    self.motor_neuron_values[timestep, spring_idx] * 0.15 # 0.3 is the monolithic
                                     # 0.05*ti.sin(spring_frequency[spring_idx] * timestep*1.0)
 
             # Absolute value
@@ -324,10 +327,14 @@ class Simulation:
         for object_idx in range(self.n_points):
             old_position = self.positions[timestep-1, object_idx]
 
+                # old_velocity = ti.Vector([-old_velocity[0],-old_velocity[1]])
+
             # Update velocity...
             old_velocity = (1-sim_damping) * self.velocities[timestep-1, object_idx] \
-            + dt*gravity * ti.Vector([0,1]) \
             + dt*(self.net_force_on_objects[timestep, object_idx]) # - self.net_force_on_objects[timestep-1, object_idx])
+
+            if old_position[1] > ground_height:
+                old_velocity += dt*gravity * ti.Vector([0,1])
 
             if old_position[1] <= ground_height and old_velocity[1] < 0:
                 # old_position = ti.Vector([old_position[0], ground_height])
@@ -341,9 +348,10 @@ class Simulation:
             #     # ZERO friction, perfect restitution
                 # old_velocity = ti.Vector([0.0,-old_velocity[1]])
                   # Friction x direction, PERFECT restitution y direction
-                old_velocity = ti.Vector([0.1*old_velocity[0],-0.9*old_velocity[1]])
+                # old_velocity = ti.Vector([0.1*old_velocity[0],-0.9*old_velocity[1]])
 
-                # old_velocity = ti.Vector([-old_velocity[0],-old_velocity[1]])
+                old_velocity = ti.Vector([0.0,0.0])
+                # old_velocity = ti.Vector([0.1*old_velocity[0],0.0])
 
             new_position = old_position + dt * old_velocity
             new_velocity = old_velocity
@@ -378,43 +386,41 @@ class Simulation:
             self.step_once(timestep)
 
     def update_weights(self):
-        # Hidden to motor neuron weights
-        for j in range(N_HIDDEN_NEURONS):
-            self.weights_hm[j] -= LEARNING_RATE * self.weights_hm.grad[j]
+        for sp in ti.static(range(self.n_springs)):
+            # Hidden to motor neuron weights
+            for j in range(N_HIDDEN_NEURONS):
+                self.weights_hm[sp, j] -= LEARNING_RATE * self.weights_hm.grad[sp, j]
 
-        # Sensor to hidden neuron weights
-        for i in range(N_HIDDEN_NEURONS):
-            for j in range(self.n_points):
-                self.weights_sh[i, j] -= LEARNING_RATE * self.weights_sh.grad[i, j]
+            # Sensor to hidden neuron weights
+            for i in range(N_HIDDEN_NEURONS):
+                for j in range(self.n_points):
+                    self.weights_sh[sp, i, j] -= LEARNING_RATE * self.weights_sh.grad[sp, i, j]
 
-        # Sensor to hidden neurons
-        for h in range(N_HIDDEN_NEURONS):
-            # Central pattern generators
-            for s in ti.static(range(N_SIN_WAVES)):
-                self.weights_sh[h, s] -= LEARNING_RATE * self.weights_sh.grad[h, s]
-            # 4 sensors for each object
-            # for j in ti.static(range(self.n_points)):
-            # print(self.weights_sh.grad[h, N_SIN_WAVES])
-            self.weights_sh[h, N_SIN_WAVES] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES]
-            self.weights_sh[h, N_SIN_WAVES + 1] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 1]
-            self.weights_sh[h, N_SIN_WAVES + 2] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 2]
-            self.weights_sh[h, N_SIN_WAVES + 3] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 3]
-            self.weights_sh[h, N_SIN_WAVES + 4] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 4]
-            self.weights_sh[h, N_SIN_WAVES + 5] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 5]
-            self.weights_sh[h, N_SIN_WAVES + 6] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 6]
-            self.weights_sh[h, N_SIN_WAVES + 7] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 7]
-            # self.weights_sh[h, N_SIN_WAVES + 8] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 8]
-            # self.weights_sh[h, N_SIN_WAVES + 9] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 9]
+            # Sensor to hidden neurons
+            for h in range(N_HIDDEN_NEURONS):
+                # Central pattern generators
+                for s in ti.static(range(N_SIN_WAVES)):
+                    self.weights_sh[sp, h, s] -= LEARNING_RATE * self.weights_sh.grad[sp, h, s]
+                self.weights_sh[sp, h, N_SIN_WAVES] -= LEARNING_RATE * self.weights_sh.grad[sp, h, N_SIN_WAVES]
+                self.weights_sh[sp, h, N_SIN_WAVES + 1] -= LEARNING_RATE * self.weights_sh.grad[sp, h, N_SIN_WAVES + 1]
+                self.weights_sh[sp, h, N_SIN_WAVES + 2] -= LEARNING_RATE * self.weights_sh.grad[sp, h, N_SIN_WAVES + 2]
+                self.weights_sh[sp, h, N_SIN_WAVES + 3] -= LEARNING_RATE * self.weights_sh.grad[sp, h, N_SIN_WAVES + 3]
+                self.weights_sh[sp, h, N_SIN_WAVES + 4] -= LEARNING_RATE * self.weights_sh.grad[sp, h, N_SIN_WAVES + 4]
+                self.weights_sh[sp, h, N_SIN_WAVES + 5] -= LEARNING_RATE * self.weights_sh.grad[sp, h, N_SIN_WAVES + 5]
+                self.weights_sh[sp, h, N_SIN_WAVES + 6] -= LEARNING_RATE * self.weights_sh.grad[sp, h, N_SIN_WAVES + 6]
+                self.weights_sh[sp, h, N_SIN_WAVES + 7] -= LEARNING_RATE * self.weights_sh.grad[sp, h, N_SIN_WAVES + 7]
+                # self.weights_sh[h, N_SIN_WAVES + 8] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 8]
+                # self.weights_sh[h, N_SIN_WAVES + 9] -= LEARNING_RATE * self.weights_sh.grad[h, N_SIN_WAVES + 9]
 
-            # self.weights_sh[h, self.n_points*4 + N_SIN_WAVES] -= LEARNING_RATE * self.weights_sh[h, self.n_points*4 + N_SIN_WAVES]
-            # self.weights_sh[h, self.n_points*4 + N_SIN_WAVES + 1] -= LEARNING_RATE * self.weights_sh[h, self.n_points*4 + N_SIN_WAVES + 1]
+                # self.weights_sh[h, self.n_points*4 + N_SIN_WAVES] -= LEARNING_RATE * self.weights_sh[h, self.n_points*4 + N_SIN_WAVES]
+                # self.weights_sh[h, self.n_points*4 + N_SIN_WAVES + 1] -= LEARNING_RATE * self.weights_sh[h, self.n_points*4 + N_SIN_WAVES + 1]
 
-        # Hidden layer biases
-        for i in range(N_HIDDEN_NEURONS):
-            self.hidden_neuron_bias[i] -= LEARNING_RATE * self.hidden_neuron_bias.grad[i]
-        # Motor neuron biases
-        # for i in range(self.n_springs):
-        self.motor_neuron_bias[None] -= LEARNING_RATE * self.motor_neuron_bias.grad[None]
+            # Hidden layer biases
+            for i in range(N_HIDDEN_NEURONS):
+                self.hidden_neuron_bias[sp, i] -= LEARNING_RATE * self.hidden_neuron_bias.grad[sp, i]
+            # Motor neuron biases
+            # for i in range(self.n_springs):
+            self.motor_neuron_bias[sp] -= LEARNING_RATE * self.motor_neuron_bias.grad[sp]
 
         
 
@@ -428,8 +434,8 @@ class Simulation:
             if np.isnan(self.loss.to_numpy()):
                 print('Loss is NaN')
                 break
-            print(iteration, n_iters - 1)
-            if iteration < n_iters:
+            # print(iteration, n_iters - 1)
+            if iteration < n_iters-1:
                 print('Updating weights...')
                 self.update_weights()
             lapsed = time.time() - start
@@ -452,10 +458,10 @@ class Simulation:
 
             for object_idx in range(self.n_points):
                 x,y = self.positions[timestep, object_idx]
-                if object_idx <= 1: # paint red
-                    gui.circle((x,y), color=0xFF0000, radius=5)
-                else:
-                    gui.circle((x,y), color=0x0, radius=5)
+                # if object_idx <= 1: # paint red
+                #     gui.circle((x,y), color=0xFF0000, radius=5)
+                # else:
+                gui.circle((x,y), color=0xFF0000, radius=5)
 
             for spring_idx in range(self.n_springs):
                 object_a_idx = self.spring_anchor_a[spring_idx]
@@ -492,13 +498,12 @@ class Simulation:
 
             self.loss[None] = 0
             self.compute_loss()
-            print('LOSS! : ', self.loss[None])
 
         # spring_idx = 0
         # plt.plot(self.spring_restoring_forces.to_numpy()[:,0,0])
-        print('Motor neuron outputs:')
-        print(self.motor_neuron_values.to_numpy()[-5:,0])
-        print(self.motor_neuron_values.to_numpy()[-5:,1])
+        # # print('Motor neuron outputs:')
+        # print(self.motor_neuron_values.to_numpy()[-5:,0])
+        # print(self.motor_neuron_values.to_numpy()[-5:,1])
         # print(self.motor_neuron_values.to_numpy()[-5:,2])
         # print(self.motor_neuron_values.to_numpy()[-5:,3])
         # plt.plot(self.motor_neuron_values.to_numpy()[:,0])
@@ -506,22 +511,23 @@ class Simulation:
         # plt.plot(self.motor_neuron_values.to_numpy()[:,2])
 
         # print(self.weights_sh.to_numpy()[:, 0])
-        print('Hidden neuron values:')
-        print(self.hidden_neuron_values.to_numpy()[-5:, 0, 0])
-        print(self.hidden_neuron_values.to_numpy()[-5:, 1, 0])
+        # print('Hidden neuron values:')
+        # print(self.hidden_neuron_values.to_numpy()[-5:, 0, 0])
+        # print(self.hidden_neuron_values.to_numpy()[-5:, 1, 0])
         # print(self.hidden_neuron_values.to_numpy()[-5:, 2, 0])
         # print(self.hidden_neuron_values.to_numpy()[-5:, 3, 0])
         # plt.plot(self.hidden_neuron_values.to_numpy()[:, 0, 0])
         # plt.plot(self.hidden_neuron_values.to_numpy()[:, 1, 0])
         # plt.plot(self.hidden_neuron_values.to_numpy()[:, 2, 0])
-        print('Hidden neuron --> Motor neuron weights:')
-        print(self.weights_hm.to_numpy()[:5])
+        # print('Hidden neuron --> Motor neuron weights:')
+        # print(self.weights_hm.to_numpy()[0, :5])
+        # print(self.weights_hm.to_numpy()[1, :5])
+        # print(self.weights_hm.to_numpy()[2, :5])
 
         # Plot the object x positions over time 
         # for object_idx in range(self.n_points):
         #     plt.plot(self.positions.to_numpy()[:, object_idx, 0])
         # plt.plot(self.spring_resting_lengths[spring_idx] + self.spring_actuation[spring_idx] * self.motor_neuron_values.to_numpy()[:, spring_idx])
-        plt.show()
 
         return self.loss
 

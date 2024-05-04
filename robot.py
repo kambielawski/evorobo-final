@@ -5,7 +5,7 @@ import numpy as np
 
 # from simulation import Simulation
 
-ACTUATION_INIT_FREQ = 0.35
+ACTUATION_INIT_FREQ = 0.25
 
 class Brain:
     def __init__(self, hidden_neuron_weights=None, motor_neuron_weights=None, hidden_neuron_bias=None, motor_neuron_bias=None): 
@@ -30,9 +30,9 @@ class SpringRobot:
         self.max_spring_length = constraints['max_spring_length']
         self.n_points = constraints['n_points']
 
-        # self.generate_random_body_points(self.n_points) # Initialize random genome
+        self.generate_random_body_points(self.n_points) # Initialize random genome
         # self.generate_box_body_points()
-        self.generate_pentagon_body_points()
+        # self.generate_pentagon_body_points()
         # self.generate_spring_body_points()
 
     # def run(self):

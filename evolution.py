@@ -11,6 +11,7 @@ class Evolution:
         self.parent_population = []
         self.current_generation = 0
         self.best_robot_over_generations = []
+        self.child_robots_over_generations = []
 
         self.population_size = experiment_parameters['population_size']
         self.max_generations = experiment_parameters['max_generations']
@@ -37,6 +38,7 @@ class Evolution:
         for robot in self.child_population:
             self.run(robot)
             robot.set_simulated(True)
+            self.child_robots_over_generations.append(robot)
 
         # Select: moves subset of children to parent population
         self.select()
