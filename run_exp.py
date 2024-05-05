@@ -21,7 +21,7 @@ exp.pickle_evo()
 
 exp_params = {
     'population_size': 1,
-    'max_generations': 3,
+    'max_generations': 50,
     'inner_iterations': 15,
     'robot_constraints': {
         'min_spring_length': 1,
@@ -32,8 +32,7 @@ exp_params = {
 
 ########
 
-evo_run = Evolution(exp_params)
-evo_run.evolve()
-evo_run.pickle_evo('evo_run.pkl')
-
-print(evo_run.best_robot_over_generations)
+for i in range(5,25):
+    evo_run = Evolution(exp_params)
+    evo_run.evolve()
+    evo_run.pickle_evo(f'evo_run_{i}.pkl')

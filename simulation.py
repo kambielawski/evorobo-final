@@ -269,24 +269,13 @@ class Simulation:
 
             # Update velocity...
             old_velocity = (1-sim_damping) * self.velocities[timestep-1, object_idx] \
-            + dt*gravity * ti.Vector([0,1]) \
             + dt*(self.net_force_on_objects[timestep, object_idx]) # - self.net_force_on_objects[timestep-1, object_idx])
 
+            if old_position[1] > ground_height:
+                old_velocity += dt*gravity * ti.Vector([0,1])
+
             if old_position[1] <= ground_height and old_velocity[1] < 0:
-                # old_position = ti.Vector([old_position[0], ground_height])
-
-                # Friction x direction, restitution y direction
-                # old_velocity = ti.Vector([0.5*old_velocity[0],-0.8*old_velocity[1]])
-
-                # ZERO Friction x direction, restitution y direction
-                # old_velocity = ti.Vector([0.0,-0.8*old_velocity[1]])
-
-            #     # ZERO friction, perfect restitution
-                # old_velocity = ti.Vector([0.0,-old_velocity[1]])
-                  # Friction x direction, PERFECT restitution y direction
-                old_velocity = ti.Vector([0.1*old_velocity[0],-0.9*old_velocity[1]])
-
-                # old_velocity = ti.Vector([-old_velocity[0],-old_velocity[1]])
+                old_velocity = ti.Vector([0.0,0.0])
 
             new_position = old_position + dt * old_velocity
             new_velocity = old_velocity
