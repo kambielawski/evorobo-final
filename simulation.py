@@ -30,20 +30,27 @@ N_HIDDEN_NEURONS = 32
 N_SIN_WAVES = 2
 GOAL_POSITION = [0.9,0.2]
 
+NEURAL_DAMAGE = 0
+STRUCTURAL_DAMAGE = 1
+
 
 @ti.data_oriented
 class Simulation:
-    def __init__(self, robot):
+    def __init__(self, robot, spring_idx_damage=None, damage_type='neural'):
         self.robot = robot
         self.robot_starting_points = robot.get_sim_body_points(x_start=0.2, y_start=0.2, body_size=0.2)
-        self.springs = robot.generate_body_springs(self.robot_starting_points)
+        if damage_type == 'structural':
+            self.springs = robot.generate_body_springs(self.robot_starting_points, damaged_spring_idx=spring_idx_damage)
+        else:
+            self.springs = robot.generate_body_springs(self.robot_starting_points)
         self.n_points = len(self.robot_starting_points)
         self.n_springs = len(self.springs)
         self.max_steps = 200
         self.losses = []
 
+
         self.initialize_fields()
-        self.initialize_body()
+        self.initialize_body(spring_idx_damage, damage_type)
         if robot.brain.hidden_neuron_bias is not None:
             self.initialize_from_brain()
         else:
@@ -98,11 +105,25 @@ class Simulation:
         ti.root.dense(ti.ij, (self.n_springs, N_HIDDEN_NEURONS)).place(self.weights_hm)
 
         self.loss = ti.field(dtype=ti.f32, shape=()) # 0-dimensional tensor (i.e. fp scalar)
+        self.spring_idx_damage = ti.field(dtype=ti.i32, shape=()) # 0-dimensional tensor (i.e. fp scalar)
+        self.damage_type = ti.field(dtype=ti.i32, shape=()) # 0 or 1
 
         ti.root.lazy_grad()
 
-    def initialize_body(self):
+    def initialize_body(self, spring_idx_damage=None, damage_type='neural'):
         self.goal[None] = GOAL_POSITION
+
+        if spring_idx_damage is not None:
+            self.spring_idx_damage[None] = spring_idx_damage
+        else:
+            self.spring_idx_damage[None] = -1
+
+        if damage_type == 'neural':
+            self.damage_type[None] = NEURAL_DAMAGE
+        elif damage_type == 'structural':
+            self.damage_type[None] = STRUCTURAL_DAMAGE
+        else:
+            self.damage_type[None] = -1
 
         # Create points in space and initialize w/ zero velocity
         for object_idx in range(self.n_points):
@@ -325,6 +346,10 @@ class Simulation:
             activation = 0.0
             for h in ti.static(range(N_HIDDEN_NEURONS)):
                 activation += self.weights_hm[spring_idx, h] * self.hidden_neuron_values[timestep, h]
+
+            if self.spring_idx_damage[None] >= 0 and self.damage_type[None] == NEURAL_DAMAGE:
+                if spring_idx == self.spring_idx_damage[None]:
+                    activation = 0.0
 
             activation = ti.tanh(activation) # + motor_neuron_bias[spring_idx])
             self.motor_neuron_values[timestep, spring_idx] = activation

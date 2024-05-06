@@ -139,16 +139,34 @@ class SpringRobot:
 
         return self.sim_body_points
 
-    def generate_body_springs(self, body_points):
+    # def generate_body_springs(self, body_points):
+    #     def make_spring(a,b, motor=False):
+    #         resting_length = np.sqrt((body_points[a][0] - body_points[b][0])**2 + (body_points[a][1] - body_points[b][1])**2)
+    #         return [a,b, resting_length, motor, ACTUATION_INIT_FREQ]
+
+    #     n_points = len(body_points)
+    #     springs = []
+    #     for i in range(n_points):
+    #         for j in range(i+1, n_points):
+    #             springs.append(make_spring(i,j, motor=True))
+
+    #     return springs
+    
+
+    def generate_body_springs(self, body_points, damaged_spring_idx=None):
         def make_spring(a,b, motor=False):
             resting_length = np.sqrt((body_points[a][0] - body_points[b][0])**2 + (body_points[a][1] - body_points[b][1])**2)
             return [a,b, resting_length, motor, ACTUATION_INIT_FREQ]
 
         n_points = len(body_points)
         springs = []
+        spring_idx = 0
+
         for i in range(n_points):
             for j in range(i+1, n_points):
-                springs.append(make_spring(i,j, motor=True))
+                if spring_idx != damaged_spring_idx:
+                    springs.append(make_spring(i,j, motor=True))
+                spring_idx += 1
 
         return springs
     
